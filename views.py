@@ -1,6 +1,7 @@
 from flask import Flask, render_template, flash, redirect
 import pandas as pd
 import numpy as np
+import scipy
 import datetime
 from datetime import timedelta, date
 import pickle
@@ -24,6 +25,9 @@ from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.decomposition import LatentDirichletAllocation
 from sklearn.metrics.pairwise import pairwise_distances
+from sklearn.preprocessing import MultiLabelBinarizer
+from sklearn.multiclass import OneVsRestClassifier
+from sklearn.linear_model import LogisticRegression
 
 app = Flask(__name__)
 
@@ -54,6 +58,9 @@ X_train_lda_code = pickle.load(open('/home/jvallet/app/modelsP6/X_train_lda_code
 count_vect_text = pickle.load(open('/home/jvallet/app/modelsP6/count_vect_text.pkl', 'rb'))
 lda_text = pickle.load(open('/home/jvallet/app/modelsP6/lda_text.pkl', 'rb'))
 X_train_lda_text = pickle.load(open('/home/jvallet/app/modelsP6/X_train_lda_text.pkl', 'rb'))
+tfidf_vectorizer = pickle.load(open('/home/jvallet/app/modelsP6/tfidf_vectorizer.pkl', 'rb'))
+mlb = pickle.load(open('/home/jvallet/app/modelsP6/mlb.pkl', 'rb'))
+classifier = pickle.load(open('/home/jvallet/app/modelsP6/LRMulti.pkl', 'rb'))
 
 class LoginForm(FlaskForm):
     select = []
@@ -176,10 +183,11 @@ def appliP6():
         def extract_tags_from_nearest_posts(col, post, nb_tags=10):
             tags_extracted = []
             if len(df.loc[post, 'Text_code_final_words']) > 0:
-                for i in col.argsort()[:nb_tags]:
+                for i in col.argsort()[:50]:
                     if len(X_train.loc[i, 'Tags_final']) > 0:
                         if (len(tags_extracted) < nb_tags):
-                            tags_extracted.append(X_train.loc[i, 'Tags_final'][0])
+                            if X_train.loc[i, 'Tags_final'][0] not in tags_extracted:
+                                tags_extracted.append(X_train.loc[i, 'Tags_final'][0])
             return tags_extracted
 
         # tags_array = []
@@ -196,10 +204,11 @@ def appliP6():
         def extract_tags_from_nearest_posts(col, post, nb_tags=10):
             tags_extracted = []
             if len(df.loc[post, 'Text_final_words']) > 0:
-                for i in col.argsort()[:nb_tags]:
+                for i in col.argsort()[:50]:
                     if len(X_train.loc[i, 'Tags_final']) > 0:
                         if (len(tags_extracted) < nb_tags):
-                            tags_extracted.append(X_train.loc[i, 'Tags_final'][0])
+                            if X_train.loc[i, 'Tags_final'][0] not in tags_extracted:
+                                tags_extracted.append(X_train.loc[i, 'Tags_final'][0])
             return tags_extracted
 
         # tags_array = []
@@ -228,9 +237,37 @@ def appliP6():
         flash('>> TAGS ISSUS DE LA MODELISATION NON SUPERVISEE LDA <<', '20')
         flash(lda_tags, '20')
         flash('____________________________________________________', '16')
+
+        # Multi-label LR
+        df_tfidf = tfidf_vectorizer.transform(df['Text_final_words_str'] + ' ' + df['Text_code_final_words_str'])
+
+        final_test = scipy.sparse.hstack([
+                df_tfidf,
+                df[['Body_length','Title_length','Nb_code_block','Text_count','Text_ld']]
+        ], format='csr')
+
+        y_pred = classifier.predict_proba(final_test)
+        pp_df = pd.DataFrame(y_pred, columns=mlb.classes_)
+
+        def extract_tags_from_multiclassifier(row):
+            tags_extracted = []
+            for tup in sorted(row.to_dict().items(), key=operator.itemgetter(1), reverse=True):
+                if len(tags_extracted) < 10:
+                    tags_extracted.append(tup[0])
+            return tags_extracted
+
+        import operator
+        lr_tags = pp_df.apply(extract_tags_from_multiclassifier, axis=1)
+        lr_tags = ' '.join(lr_tags.values[0]).split()
+        lr_tags = '  |  '.join(lr_tags)
+
+        flash('>> TAGS ISSUS DE LA MODELISATION SUPERVISEE MULTI-LABELS LR <<', '20')
+        flash(lr_tags, '20')
+        flash('____________________________________________________', '16')
         flash('Rappel de la question :', '16')
         flash(title, '12')
         flash(body, '12')
+
         return redirect('/tags/')
 
     return render_template('tags.html', form=form)
